@@ -2,11 +2,11 @@
 
 #---------------------------------------------------
 # Script: LisaServer.com
-# Versión: 6.9 (Estable, con logo naranja)
+# Versión: 6.13 (Corrección de error de sintaxis 'done')
 # Finalidad: Monitorización y gestión del servidor.
 #---------------------------------------------------
 
-# --- Definición de Colores y Emoticonos (Formato robusto) ---
+# --- Definición de Colores y Emoticonos ---
 NC=$'\033[0m'      # Sin Color
 BOLD=$'\033[1m'
 RED=$'\033[0;31m'
@@ -15,39 +15,56 @@ YELLOW=$'\033[0;33m'
 CYAN=$'\033[0;36m'
 MAGENTA=$'\033[0;35m'
 ORANGE=$'\033[38;5;208m' # Color Naranja
+DIM='\033[2m' # Color atenuado
+
+# --- Flags de Dependencias ---
+HAS_WGET=false
+HAS_VNSTAT=false
+HAS_NEOFETCH=false
+HAS_SMARTCTL=false
 
 # --- Función para comprobar e instalar dependencias ---
 check_dependencies() {
-    echo -e "${CYAN}Verificando las dependencias necesarias...${NC}"
-    local missing_apt=()
+    command -v wget &>/dev/null && HAS_WGET=true
+    command -v vnstat &>/dev/null && HAS_VNSTAT=true
+    command -v neofetch &>/dev/null && HAS_NEOFETCH=true
+    command -v smartctl &>/dev/null && HAS_SMARTCTL=true
 
-    for pkg in wget vnstat neofetch; do
-        if ! command -v "$pkg" &> /dev/null; then
-            missing_apt+=("$pkg")
-        fi
-    done
+    local missing_pkgs=()
+    ! $HAS_WGET && missing_pkgs+=("wget")
+    ! $HAS_VNSTAT && missing_pkgs+=("vnstat")
+    ! $HAS_NEOFETCH && missing_pkgs+=("neofetch")
+    ! $HAS_SMARTCTL && missing_pkgs+=("smartmontools")
 
-    if [ ${#missing_apt[@]} -eq 0 ]; then
+    if [ ${#missing_pkgs[@]} -eq 0 ]; then
         echo -e "${GREEN}✅ Todas las dependencias están en orden.${NC}"; sleep 1; return 0;
     fi
     
-    echo -e "${YELLOW}⚠️  Se requiere instalar: ${missing_apt[*]}.${NC}"
+    echo -e "${YELLOW}⚠️  Dependencias opcionales faltantes: ${missing_pkgs[*]}.${NC}"
+    echo -e "${YELLOW}Algunas funciones del menú estarán deshabilitadas.${NC}"
+    
     if [[ $EUID -ne 0 ]]; then
-        echo -e "${RED}❌ Para continuar, por favor ejecuta el script con sudo:${NC}"
-        echo -e "   sudo $0"; exit 1;
+        echo -e "${RED}Para instalar las dependencias, ejecuta el script con sudo.${NC}"; sleep 2; return 1;
     fi
     
-    read -p "¿Deseas que el script realice la instalación ahora? (s/n): " choice
+    read -p "¿Deseas instalar las dependencias ahora? (s/n): " choice
     if [[ "$choice" != "s" && "$choice" != "S" ]]; then
-        echo "Instalación omitida."; return 1;
+        echo "Instalación omitida. El script continuará con funcionalidad limitada."
+        sleep 2
+        return 1
     fi
 
-    echo "Instalando paquetes APT: ${missing_apt[*]}..."
+    echo "Instalando paquetes APT: ${missing_pkgs[*]}..."
     apt-get update &> /dev/null
-    if ! apt-get install -y "${missing_apt[@]}"; then
-         echo -e "${RED}❌ Error instalando paquetes con APT.${NC}"
+    if apt-get install -y "${missing_pkgs[@]}"; then
+        echo -e "${GREEN}✅ Paquetes instalados correctamente.${NC}"
+        # Vuelve a comprobar para actualizar los flags
+        command -v wget &>/dev/null && HAS_WGET=true
+        command -v vnstat &>/dev/null && HAS_VNSTAT=true
+        command -v neofetch &>/dev/null && HAS_NEOFETCH=true
+        command -v smartctl &>/dev/null && HAS_SMARTCTL=true
     else
-         echo -e "${GREEN}✅ Paquetes instalados correctamente.${NC}"
+        echo -e "${RED}❌ Error instalando paquetes con APT.${NC}"
     fi
 }
 
@@ -91,8 +108,6 @@ get_download_speed() {
 }
 
 get_data_usage() {
-    if ! command -v vnstat &> /dev/null; then echo -e "\n${RED}🚫 'vnstat' no está instalado.${NC}"; return; fi
-
     echo -e "\n${CYAN}${BOLD}--- 📊 MONITOR DE CONSUMO DE DATOS ---${NC}"
     local interface; interface=$(ip route | grep default | sed -e 's/^.*dev.//' -e 's/.proto.*//' | head -n1 || echo "eth0")
     echo -e "Mostrando estadísticas para la interfaz: ${YELLOW}${interface}${NC}\n"
@@ -123,23 +138,19 @@ get_data_usage() {
     
     local today_line=$(echo "$vnstat_output" | grep -wE "hoy|today")
     local yesterday_line=$(echo "$vnstat_output" | grep -wE "ayer|yesterday")
-    
     local all_monthly_lines=$(echo "$vnstat_output" | awk '/monthly/,/daily/' | grep -E "\w{3,4} '[0-9]{2}")
     local current_month_line=$(echo "$all_monthly_lines" | tail -n 1)
     local previous_month_line=""
     if [ "$(echo "$all_monthly_lines" | wc -l)" -gt 1 ]; then
         previous_month_line=$(echo "$all_monthly_lines" | tail -n 2 | head -n 1)
     fi
-
     local last_30_days_line=$(echo "$vnstat_output" | awk '/daily/,/monthly/' | grep -E "total")
-
 
     print_data_line "☀️" "Hoy" "$today_line" "${BOLD}${YELLOW}"
     print_data_line "🌙" "Ayer" "$yesterday_line" "${NC}"
     print_data_line "📅" "Mes Actual" "$current_month_line" "${BOLD}${GREEN}"
     print_data_line "⏮️" "Mes Pasado" "$previous_month_line" "${NC}"
     print_data_line "🗓️" "Últimos 30 días" "$last_30_days_line" "${BOLD}${MAGENTA}"
-    
     echo "------------------------------------------------------------------------------------------"
 }
 
@@ -192,6 +203,38 @@ show_active_ports() {
     ss -tulnp
 }
 
+get_disk_details() {
+    echo -e "\n${CYAN}${BOLD}--- 💿 DETALLES DE LAS UNIDADES DE DISCO ---${NC}"
+    lsblk -d -o NAME,SIZE | tail -n +2 | while read -r name size; do
+        local device="/dev/$name"
+        echo -e "\n${YELLOW}✚ Análisis de:${NC} ${BOLD}$device${NC} (${BOLD}${size}${NC})"
+        
+        local smart_info; smart_info=$(sudo smartctl -a "$device" 2>/dev/null)
+        
+        local model=$(echo "$smart_info" | awk -F': ' '/Device Model/ {print $2}')
+        local serial=$(echo "$smart_info" | awk -F': ' '/Serial Number/ {print $2}')
+        local temp=$(echo "$smart_info" | awk '/Temperature:/ {print $2"°C"} /Temperature_Celsius/ {print $10"°C"}')
+        
+        local type_text; local spec_text
+        if [[ $name == nvme* ]]; then
+            type_text="${GREEN}SSD (NVMe) 🚀${NC}"
+            spec_text="N/A"
+        elif echo "$smart_info" | grep -q "Rotation Rate"; then
+            type_text="${CYAN}HDD (Mecánico) ⚙️${NC}"
+            spec_text=$(echo "$smart_info" | awk -F': ' '/Rotation Rate/ {print $2}')
+        else
+            type_text="${GREEN}SSD (SATA) ⚡${NC}"
+            spec_text="N/A"
+        fi
+
+        printf "  %-15s %s\n" "Modelo" "${model:-No disponible}"
+        printf "  %-15s %s\n" "Nº de Serie" "${serial:-No disponible}"
+        printf "  %-15s %b\n" "Tipo" "${type_text}"
+        printf "  %-15s %s\n" "Especificación" "${spec_text}"
+        printf "  %-15s ${BOLD}${RED}%s${NC}\n" "Temperatura" "${temp:-No disponible}"
+    done
+}
+
 # --- FUNCIONES DE SISTEMA ---
 
 reboot_server() {
@@ -215,15 +258,17 @@ self_destruct() {
 }
 
 # --- BUCLE PRINCIPAL DEL MENÚ ---
+check_dependencies
+
 while true; do
     clear; printf '\n\n\n\n\n\n'
     
     # --- CABECERA GRÁFICA ---
     echo -e "${ORANGE}${BOLD}"; echo '        ██╗     ██╗███████╗ █████╗ '; echo '        ██║     ██║██╔════╝██╔══██╗'; echo '        ██║     ██║███████╗███████║'; echo '        ██║     ██║╚════██║██╔══██║'; echo '        ███████╗██║███████║██║  ██║'; echo '        ╚══════╝╚═╝╚══════╝╚═╝  ╚═╝'; echo -e "${NC}"
     echo -e "                   ${YELLOW}LisaServer.com${NC}"
-    echo -e "       ${YELLOW}Panel de Gestión y Monitorización v6.9${NC}"; echo ""
+    echo -e "       ${YELLOW}Panel de Gestión y Monitorización v6.13${NC}"; echo ""
 
-    # --- MENÚ DE UNA SOLA COLUMNA ---
+    # --- MENÚ DINÁMICO ---
     
     echo -e "${MAGENTA}${BOLD}   --- 🛠️ ADMINISTRACIÓN ---${NC}"
     echo -e "      ${GREEN}1.${NC}${CYAN} Cambiar Nombre de Host"
@@ -232,14 +277,37 @@ while true; do
     echo ""
 
     echo -e "${MAGENTA}${BOLD}   --- 📊 MONITORIZACIÓN Y ANÁLISIS ---${NC}"
-    echo -e "      ${GREEN}4.${NC}${CYAN} Especificaciones Servidor 💻"
-    echo -e "      ${GREEN}5.${NC}${CYAN} Test de Velocidad 📥"
-    echo -e "      ${GREEN}6.${NC}${CYAN} Consumo de Datos 📈"
+    # Opción 4
+    if $HAS_NEOFETCH; then
+        echo -e "      ${GREEN}4.${NC}${CYAN} Especificaciones Servidor 💻"
+    else
+        echo -e "      ${DIM}4. Especificaciones Servidor ⛔ [Falta neofetch]${NC}"
+    fi
+    # Opción 5
+    if $HAS_WGET; then
+        echo -e "      ${GREEN}5.${NC}${CYAN} Test de Velocidad 📥"
+    else
+        echo -e "      ${DIM}5. Test de Velocidad ⛔ [Falta wget]${NC}"
+    fi
+    # Opción 6
+    if $HAS_VNSTAT; then
+        echo -e "      ${GREEN}6.${NC}${CYAN} Consumo de Datos 📈"
+    else
+        echo -e "      ${DIM}6. Consumo de Datos ⛔ [Falta vnstat]${NC}"
+    fi
+    
     echo -e "      ${GREEN}7.${NC}${CYAN} Espacio en Disco 💾"
     echo -e "      ${GREEN}8.${NC}${CYAN} Últimos Logins 🕵️"
     echo -e "      ${GREEN}9.${NC}${CYAN} Top 5 Procesos 🚀"
     echo -e "      ${GREEN}10.${NC}${CYAN} Estado de Servicio 🟢"
     echo -e "      ${GREEN}11.${NC}${CYAN} Puertos Activos 🌐"
+
+    # Opción 12
+    if $HAS_SMARTCTL; then
+        echo -e "      ${GREEN}12.${NC}${CYAN} Detalles de Discos (Temp/Modelo) 💿"
+    else
+        echo -e "      ${DIM}12. Detalles de Discos (Temp/Modelo) ⛔ [Falta smartmontools]${NC}"
+    fi
     echo ""
 
     echo -e "${MAGENTA}${BOLD}   --- ⚙️ SISTEMA ---${NC}"
@@ -252,9 +320,12 @@ while true; do
 
     case $choice in
         1) change_hostname ;; 2) change_root_password ;; 3) create_myuser ;;
-        4) get_server_specs ;; 5) get_download_speed ;; 6) get_data_usage ;;
+        4) if $HAS_NEOFETCH; then get_server_specs; else echo -e "\n${RED}Función no disponible. Instala 'neofetch'.${NC}"; fi ;;
+        5) if $HAS_WGET; then get_download_speed; else echo -e "\n${RED}Función no disponible. Instala 'wget'.${NC}"; fi ;;
+        6) if $HAS_VNSTAT; then get_data_usage; else echo -e "\n${RED}Función no disponible. Instala 'vnstat'.${NC}"; fi ;;
         7) show_disk_space ;; 8) show_last_logins ;; 9) show_top_processes ;;
         10) check_service_status ;; 11) show_active_ports ;;
+        12) if $HAS_SMARTCTL; then get_disk_details; else echo -e "\n${RED}Función no disponible. Instala 'smartmontools'.${NC}"; fi ;;
         20) reboot_server ;; 99) self_destruct ;;
         0) echo -e "\n${MAGENTA}Saliendo... ¡Hasta luego! ✨${NC}\n"; exit 0 ;;
         *) echo -e "\n${RED}Opción no válida.${NC}" ;;
